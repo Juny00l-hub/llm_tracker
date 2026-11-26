@@ -109,6 +109,7 @@
   .card-link::after { content: ""; position: absolute; inset: 0; border-radius: 12px; }
   .card-link:focus-visible { outline: none; }
   .card-link:focus-visible::after { box-shadow: 0 0 0 2px var(--ink); }
+  .ai-result { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
   .card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .orig { font-size: 13px; font-weight: 500; line-height: 1.5; }
   .card:hover .orig { color: var(--primary-text); text-decoration: underline; }
@@ -233,14 +234,15 @@ const state = {
   dealSort: saved.dealSort || 'end',                           // end | start
   expanded: !!saved.expanded,                                  // 태그 박스 펼침
   aiCache: saved.aiCache || {},                              // { dealId: true(맞음) | false(안 맞음) }
+  aiResults: saved.aiResults || {},                          // { dealId: { price, discount } }
   excludes: saved.excludes || {},                              // { 키워드: [제외어] }
   dismissed: saved.dismissed || [],                            // 닫은 제안 id
   // 저장하지 않는 상태
   llm: 'idle', judged: 0, reapplying: false, dialog: null, flash: null, open: {}, drag: null
 };
 function persist() {
-  const { keywords, selected, kwSort, dealSort, expanded, aiCache, excludes, dismissed } = state;
-  try { localStorage.setItem(STORE_KEY, JSON.stringify({ keywords, selected, kwSort, dealSort, expanded, aiCache, excludes, dismissed })); } catch (e) {}
+  const { keywords, selected, kwSort, dealSort, expanded, aiCache, aiResults, excludes, dismissed } = state;
+  try { localStorage.setItem(STORE_KEY, JSON.stringify({ keywords, selected, kwSort, dealSort, expanded, aiCache, aiResults, excludes, dismissed })); } catch (e) {}
 }
 function set(patch) { Object.assign(state, patch); persist(); render(); }
 
@@ -368,9 +370,11 @@ function renderSuggestion() {
 
 function renderCard(d) {
   const open = !!state.open[d.id];
+  const aiResult = state.aiResults[d.id];
   return `<article class="card">
     <span class="label">${esc(d.src)}</span>
     <h3><a class="card-link" href="${esc(d.url)}" target="_blank" rel="noopener noreferrer">${esc(d.title)}</a></h3>
+    ${aiResult ? `<p class="ai-result">가격: ${esc(aiResult.price)} · 할인: ${esc(aiResult.discount)}</p>` : ''}
     ${d.end ? `<span class="label">${esc(d.start)} – ${esc(d.end)}</span>` : ''}
     <div class="card-foot">
       <span class="orig">원문 보기</span>
@@ -460,6 +464,15 @@ function render() {
 /* ────────────────────────── LLM 판단 (ai.js + translator-ko.js) ────────────────────────── */
 const aiDiag = document.getElementById('ai-diag');
 const showAiStatus = (msg) => { aiDiag.textContent = msg; };
+function validatedAiValue(value, title) {
+  const numbers = (text) => (String(text == null ? '' : text).match(/\d+(?:[,.]\d+)*/g) || [])
+    .map((number) => number.replace(/,/g, ''));
+  const resultNumbers = numbers(value);
+  const titleNumbers = numbers(title);
+  return resultNumbers.length && resultNumbers.every((number) => titleNumbers.includes(number))
+    ? String(value)
+    : '정보 없음';
+}
 let running = false;
 function runLlm() {
   if (running) return;
@@ -486,6 +499,10 @@ async function judge(pending, ready) {
       try {
         const [kw, title] = await KoTranslate.toEnglish([d.kw, d.title]);
         const out = await AI.ask(session, `Keyword: ${kw}\nItem (${d.src === '뉴스' ? 'news headline' : 'deal post'}): ${title}`, schema);
+        state.aiResults[d.id] = {
+          price: validatedAiValue(out.price, d.title),
+          discount: validatedAiValue(out.discount, d.title),
+        };
         state.aiCache[d.id] = !!out.relevant;
       } catch (e) {
         console.warn('판단 실패 (숨기지 않고 보여줘요):', d.title, e);
